@@ -45,7 +45,7 @@ def prepare_data(tables):
         booknow.groupby(
             ["book_theater_id", "show_date"],
             as_index=False,
-        )["tickets_booked"]
+        )["tickets_booked"] 
         .sum()
     )
 
