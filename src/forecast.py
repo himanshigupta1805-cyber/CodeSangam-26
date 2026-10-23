@@ -65,21 +65,26 @@ def forecast(data, model_bundle=None, model_name=None):
 
 
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("model", nargs="?", choices=["catboost", "lightgbm"], default=MODEL_NAME)
+    selected = parser.parse_args().model
     data = prepare_data(load_data())
-    model_path = get_model_path(MODEL_NAME)
+    model_path = get_model_path(selected)
 
     if model_path.is_file():
         with model_path.open("rb") as file:
             bundle = pickle.load(file)
-        if bundle.get("model_name") != MODEL_NAME:
+        if bundle.get("model_name") != selected:
             raise ValueError(
-                f"Saved model at {model_path} is not the selected {MODEL_NAME} model."
+                f"Saved model at {model_path} is not the selected {selected} model."
             )
     else:
-        print(f"No saved {MODEL_NAME} model found; training it now.")
+        print(f"No saved {selected} model found; training it now.")
         bundle = None
 
-    predictions = forecast(data, bundle, model_name=MODEL_NAME)
+    predictions = forecast(data, bundle, model_name=selected)
     submission = data["sample_submission"][["ID"]].merge(
         predictions[["ID", TARGET]],
         on="ID",
@@ -90,9 +95,12 @@ def main():
     if submission[TARGET].isna().any():
         raise ValueError("Some test IDs did not receive a forecast.")
 
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    submission.to_csv(OUTPUT_PATH, index=False)
-    print(f"Saved {len(submission):,} predictions to {OUTPUT_PATH}")
+    output_path = PROJECT_ROOT / "outputs" / (
+        "submission.csv" if selected == "catboost" else f"submission_{selected}.csv"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    submission.to_csv(output_path, index=False)
+    print(f"Saved {len(submission):,} predictions to {output_path}")
 
 
 if __name__ == "__main__":
