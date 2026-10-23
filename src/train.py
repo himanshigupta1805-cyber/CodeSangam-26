@@ -14,11 +14,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# Select the model here. LightGBM can be selected after its model implementation
-# is added; for now CatBoost is the only implemented model.
+# CatBoost remains the default. Pass a model name to the CLI to train another.
 MODEL_NAME = "catboost"
-IMPLEMENTED_MODELS = {"catboost"}
-PLANNED_MODELS = {"lightgbm"}
+IMPLEMENTED_MODELS = {"catboost", "lightgbm"}
+TRAINING_MODES = IMPLEMENTED_MODELS | {"hybrid"}
+DEFAULT_RUN_MODE = "hybrid"
 CATEGORICAL_COLUMNS = ["book_theater_id", "theater_area", "theater_type"]
 
 
@@ -28,14 +28,37 @@ def get_model_path(model_name=None):
     return PROJECT_ROOT / "models" / f"{selected}_footfall.pkl"
 
 
+def get_hybrid_model_path(model_name):
+    """Return the saved-model path for one component of the hybrid run."""
+    if model_name not in IMPLEMENTED_MODELS:
+        raise ValueError(f"Unknown model name: {model_name!r}")
+    return PROJECT_ROOT / "models" / f"{model_name}_footfall_hybrid.pkl"
+
+
+def split_frame(frame, first_fraction=0.6, random_seed=42):
+    """Deterministically split rows into a first and remaining partition."""
+    if not 0 < first_fraction < 1:
+        raise ValueError("first_fraction must be between 0 and 1")
+    order = np.random.default_rng(random_seed).permutation(len(frame))
+    split_at = int(round(len(frame) * first_fraction))
+    first = frame.iloc[order[:split_at]].copy()
+    second = frame.iloc[order[split_at:]].copy()
+    return first, second
+
+
+def fit_hybrid_models(frame):
+    """Train CatBoost on 60% of rows and LightGBM on the remaining 40%."""
+    catboost_frame, lightgbm_frame = split_frame(frame, first_fraction=0.6)
+    return {
+        "catboost": fit_model(catboost_frame, model_name="catboost"),
+        "lightgbm": fit_model(lightgbm_frame, model_name="lightgbm"),
+    }
+
+
 def split_features(frame, feature_columns=None, model_name=None):
-    """Prepare model inputs, using native categorical features for CatBoost."""
+    """Prepare model inputs with the categorical format each model expects."""
     selected = model_name or MODEL_NAME
     if selected not in IMPLEMENTED_MODELS:
-        if selected in PLANNED_MODELS:
-            raise NotImplementedError(
-                f"{selected} has not been implemented yet. Use 'catboost' for now."
-            )
         raise ValueError(f"Unknown model name: {selected!r}")
 
     x = frame.drop(columns=[TARGET], errors="ignore").copy()
@@ -44,12 +67,14 @@ def split_features(frame, feature_columns=None, model_name=None):
         column for column in CATEGORICAL_COLUMNS if column in x.columns
     ]
     for column in categorical_columns:
-        x[column] = x[column].fillna("__MISSING__").astype(str)
+        values = x[column].fillna("__MISSING__")
+        x[column] = values.astype(str) if selected == "catboost" else values.astype("category")
 
     if feature_columns is not None:
         x = x.reindex(columns=feature_columns, fill_value=0)
         for column in categorical_columns:
-            x[column] = x[column].fillna("__MISSING__").astype(str)
+            values = x[column].fillna("__MISSING__")
+            x[column] = values.astype(str) if selected == "catboost" else values.astype("category")
 
     x = x.replace([np.inf, -np.inf], np.nan)
     numeric_columns = [
@@ -64,32 +89,39 @@ def fit_model(frame, model_name=None):
     """Fit the chosen model and return it with its feature metadata."""
     selected = model_name or MODEL_NAME
     if selected not in IMPLEMENTED_MODELS:
-        if selected in PLANNED_MODELS:
-            raise NotImplementedError(
-                f"{selected} has not been implemented yet. Use 'catboost' for now."
-            )
         choices = ", ".join(sorted(IMPLEMENTED_MODELS))
         raise ValueError(f"Unknown model {selected!r}. Choose one of: {choices}")
 
     x = split_features(frame, model_name=selected)
     y = frame[TARGET]
 
-    try:
-        from models.catboost_model import build_model
-    except ModuleNotFoundError as error:
-        if error.name == "catboost":
-            raise RuntimeError(
-                "CatBoost is not installed in this Python environment. "
-                "Activate the Python 3.14 project environment and install it "
-                "with: python -m pip install catboost"
-            ) from error
-        raise
-
-    model = build_model()
     categorical_features = [
         column for column in CATEGORICAL_COLUMNS if column in x.columns
     ]
-    model.fit(x, y, cat_features=categorical_features)
+    if selected == "catboost":
+        try:
+            from models.catboost_model import build_model
+        except ModuleNotFoundError as error:
+            if error.name == "catboost":
+                raise RuntimeError(
+                    "CatBoost is not installed in this Python environment. "
+                    "Install it with: python -m pip install catboost"
+                ) from error
+            raise
+        model = build_model()
+        model.fit(x, y, cat_features=categorical_features)
+    else:
+        try:
+            from models.lightgbm_model import build_model
+        except ModuleNotFoundError as error:
+            if error.name == "lightgbm":
+                raise RuntimeError(
+                    "LightGBM is not installed in this Python environment. "
+                    "Install it with: python -m pip install lightgbm"
+                ) from error
+            raise
+        model = build_model()
+        model.fit(x, y, categorical_feature=categorical_features)
 
     return {
         "model": model,
@@ -100,13 +132,35 @@ def fit_model(frame, model_name=None):
 
 
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "model",
+        nargs="?",
+        choices=sorted(TRAINING_MODES),
+        default=DEFAULT_RUN_MODE,
+    )
+    selected = parser.parse_args().model
+
     data = prepare_data(load_data())
     frame = make_training_frame(
         data["visits"],
         data["booknow_theaters"],
         data["bookings_daily"],
     )
-    bundle = fit_model(frame)
+    if selected == "hybrid":
+        bundles = fit_hybrid_models(frame)
+        for model_name, bundle in bundles.items():
+            path = get_hybrid_model_path(model_name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("wb") as file:
+                pickle.dump(bundle, file)
+            print(f"Trained {model_name} on its hybrid partition")
+            print(f"Saved model to: {path}")
+        return
+
+    bundle = fit_model(frame, model_name=selected)
 
     path = get_model_path(bundle["model_name"])
     path.parent.mkdir(parents=True, exist_ok=True)
