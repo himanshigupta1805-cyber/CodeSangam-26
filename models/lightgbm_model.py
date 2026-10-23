@@ -11,6 +11,7 @@ def build_model():
         learning_rate=0.05,
         num_leaves=31,
         max_depth=-1,
+        device_type="cpu",
         random_state=42,
         n_jobs=-1,
         verbosity=-1,

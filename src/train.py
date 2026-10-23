@@ -17,6 +17,8 @@ if str(PROJECT_ROOT) not in sys.path:
 # CatBoost remains the default. Pass a model name to the CLI to train another.
 MODEL_NAME = "catboost"
 IMPLEMENTED_MODELS = {"catboost", "lightgbm"}
+TRAINING_MODES = IMPLEMENTED_MODELS | {"hybrid"}
+DEFAULT_RUN_MODE = "hybrid"
 CATEGORICAL_COLUMNS = ["book_theater_id", "theater_area", "theater_type"]
 
 
@@ -24,6 +26,33 @@ def get_model_path(model_name=None):
     """Return the saved-model path for the selected model."""
     selected = model_name or MODEL_NAME
     return PROJECT_ROOT / "models" / f"{selected}_footfall.pkl"
+
+
+def get_hybrid_model_path(model_name):
+    """Return the saved-model path for one component of the hybrid run."""
+    if model_name not in IMPLEMENTED_MODELS:
+        raise ValueError(f"Unknown model name: {model_name!r}")
+    return PROJECT_ROOT / "models" / f"{model_name}_footfall_hybrid.pkl"
+
+
+def split_frame(frame, first_fraction=0.6, random_seed=42):
+    """Deterministically split rows into a first and remaining partition."""
+    if not 0 < first_fraction < 1:
+        raise ValueError("first_fraction must be between 0 and 1")
+    order = np.random.default_rng(random_seed).permutation(len(frame))
+    split_at = int(round(len(frame) * first_fraction))
+    first = frame.iloc[order[:split_at]].copy()
+    second = frame.iloc[order[split_at:]].copy()
+    return first, second
+
+
+def fit_hybrid_models(frame):
+    """Train CatBoost on 60% of rows and LightGBM on the remaining 40%."""
+    catboost_frame, lightgbm_frame = split_frame(frame, first_fraction=0.6)
+    return {
+        "catboost": fit_model(catboost_frame, model_name="catboost"),
+        "lightgbm": fit_model(lightgbm_frame, model_name="lightgbm"),
+    }
 
 
 def split_features(frame, feature_columns=None, model_name=None):
@@ -106,7 +135,12 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("model", nargs="?", choices=sorted(IMPLEMENTED_MODELS), default=MODEL_NAME)
+    parser.add_argument(
+        "model",
+        nargs="?",
+        choices=sorted(TRAINING_MODES),
+        default=DEFAULT_RUN_MODE,
+    )
     selected = parser.parse_args().model
 
     data = prepare_data(load_data())
@@ -115,6 +149,17 @@ def main():
         data["booknow_theaters"],
         data["bookings_daily"],
     )
+    if selected == "hybrid":
+        bundles = fit_hybrid_models(frame)
+        for model_name, bundle in bundles.items():
+            path = get_hybrid_model_path(model_name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("wb") as file:
+                pickle.dump(bundle, file)
+            print(f"Trained {model_name} on its hybrid partition")
+            print(f"Saved model to: {path}")
+        return
+
     bundle = fit_model(frame, model_name=selected)
 
     path = get_model_path(bundle["model_name"])
