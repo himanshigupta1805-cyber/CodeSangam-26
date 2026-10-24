@@ -41,6 +41,8 @@ def forecast(data, model_bundle=None, model_name=None):
             visits,
             theaters,
             data.get("bookings_daily"),
+            data.get("location_groups"),
+            data.get("bookings_by_location"),
         )
         model_bundle = fit_model(training_frame, model_name=selected)
 
@@ -52,6 +54,8 @@ def forecast(data, model_bundle=None, model_name=None):
             rows,
             theaters,
             data.get("bookings_daily"),
+            data.get("location_groups"),
+            data.get("bookings_by_location"),
         )
         x = split_features(
             features,
@@ -101,6 +105,8 @@ def forecast_hybrid(data, model_bundles):
                 rows,
                 theaters,
                 data.get("bookings_daily"),
+                data.get("location_groups"),
+                data.get("bookings_by_location"),
             )
             bundle = model_bundles[model_name]
             x = split_features(
@@ -159,6 +165,8 @@ def main():
                 data["visits"],
                 data["booknow_theaters"],
                 data.get("bookings_daily"),
+                data.get("location_groups"),
+                data.get("bookings_by_location"),
             )
             bundles = fit_hybrid_models(training_frame)
             for model_name, bundle in bundles.items():

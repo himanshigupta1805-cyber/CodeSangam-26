@@ -19,7 +19,12 @@ MODEL_NAME = "catboost"
 IMPLEMENTED_MODELS = {"catboost", "lightgbm"}
 TRAINING_MODES = IMPLEMENTED_MODELS | {"hybrid"}
 DEFAULT_RUN_MODE = "hybrid"
-CATEGORICAL_COLUMNS = ["book_theater_id", "theater_area", "theater_type"]
+CATEGORICAL_COLUMNS = [
+    "book_theater_id",
+    "location_group_id",
+    "theater_area",
+    "theater_type",
+]
 
 
 def get_model_path(model_name=None):
@@ -148,6 +153,8 @@ def main():
         data["visits"],
         data["booknow_theaters"],
         data["bookings_daily"],
+        data["location_groups"],
+        data["bookings_by_location"],
     )
     if selected == "hybrid":
         bundles = fit_hybrid_models(frame)

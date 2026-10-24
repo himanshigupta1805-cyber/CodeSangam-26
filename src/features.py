@@ -8,7 +8,14 @@ TARGET = "audience_count"
 BOOKING_COLUMNS = ["tickets_booked", "tickets_sold"]
 
 
-def make_features(history, rows, theaters, bookings_daily=None):
+def make_features(
+    history,
+    rows,
+    theaters,
+    bookings_daily=None,
+    location_groups=None,
+    bookings_by_location=None,
+):
     """Build features for requested theater/date rows.
 
     Only target values from dates before each requested date are used.
@@ -22,25 +29,54 @@ def make_features(history, rows, theaters, bookings_daily=None):
 
     theaters = theaters.drop_duplicates("book_theater_id").copy()
 
-    # Create a date-indexed audience history for each theater.
+    location_lookup = None
+    if location_groups is not None:
+        location_lookup = location_groups.loc[
+            location_groups["source"] == "booknow",
+            ["theater_id", "location_group_id"],
+        ].drop_duplicates("theater_id")
+
+        history = history.merge(
+            location_lookup,
+            left_on="book_theater_id",
+            right_on="theater_id",
+            how="left",
+            validate="many_to_one",
+        )
+        history["location_group_id"] = history["location_group_id"].fillna(
+            "unlocated_booknow_" + history["book_theater_id"].astype(str)
+        )
+        history_key = "location_group_id"
+    else:
+        history_key = "book_theater_id"
+
+    # Pool same-date history across IDs that represent one location.
+    history = (
+        history.groupby([history_key, "show_date"], as_index=False)[TARGET]
+        .mean()
+        .sort_values("show_date")
+    )
     history_by_theater = {
         theater_id: (
-            group.drop_duplicates("show_date")
-            .set_index("show_date")[TARGET]
-            .sort_index()
+            group.set_index("show_date")[TARGET].sort_index()
         )
-        for theater_id, group in history.groupby("book_theater_id", sort=False)
+        for theater_id, group in history.groupby(history_key, sort=False)
     }
 
-    # Create a lookup for daily booking totals, if booking data was provided.
+    # Prefer location-level ledgers; retain the older lookup for compatibility.
     booking_lookup = None
-    if bookings_daily is not None and not bookings_daily.empty:
-        bookings_daily = bookings_daily.copy()
-        bookings_daily["show_date"] = (
-            pd.to_datetime(bookings_daily["show_date"]).dt.normalize()
+    booking_key = "book_theater_id"
+    booking_table = bookings_daily
+    if bookings_by_location is not None and not bookings_by_location.empty:
+        booking_key = "location_group_id"
+        booking_table = bookings_by_location
+    if booking_table is not None and not booking_table.empty:
+        booking_table = booking_table.copy()
+        booking_table["show_date"] = (
+            pd.to_datetime(booking_table["show_date"]).dt.normalize()
         )
-        booking_lookup = bookings_daily.set_index(
-            ["book_theater_id", "show_date"]
+        booking_lookup = booking_table.set_index(
+            [booking_key, "show_date"]
         )
 
     # Add theater area/type/coordinates to each requested theater/date row.
@@ -50,17 +86,33 @@ def make_features(history, rows, theaters, bookings_daily=None):
         how="left",
         validate="many_to_one",
     )
+    if location_lookup is not None:
+        rows = rows.merge(
+            location_lookup,
+            left_on="book_theater_id",
+            right_on="theater_id",
+            how="left",
+            validate="many_to_one",
+        )
+        rows["location_group_id"] = rows["location_group_id"].fillna(
+            "unlocated_booknow_" + rows["book_theater_id"].astype(str)
+        )
 
     feature_rows = []
 
     for row in rows.itertuples(index=False):
         theater_id = row.book_theater_id
+        history_id = (
+            getattr(row, "location_group_id", theater_id)
+            if location_lookup is not None
+            else theater_id
+        )
         date = row.show_date
 
         # Important: use a date-indexed empty series when there is no history.
         # This allows the comparison with `date` below to work.
         by_date = history_by_theater.get(
-            theater_id,
+            history_id,
             pd.Series(index=pd.DatetimeIndex([]), dtype=float),
         )
 
@@ -69,6 +121,7 @@ def make_features(history, rows, theaters, bookings_daily=None):
 
         item = {
             "book_theater_id": theater_id,
+            "location_group_id": history_id,
             "theater_area": getattr(row, "theater_area", None),
             "theater_type": getattr(row, "theater_type", None),
             "latitude": getattr(row, "latitude", np.nan),
@@ -100,7 +153,8 @@ def make_features(history, rows, theaters, bookings_daily=None):
         # Use only booking totals from the prior day, not the requested date.
         for column in BOOKING_COLUMNS:
             prior_date = date - pd.Timedelta(days=1)
-            key = (theater_id, prior_date)
+            booking_id = history_id if booking_key == "location_group_id" else theater_id
+            key = (booking_id, prior_date)
 
             if booking_lookup is not None and column in booking_lookup.columns:
                 item[f"prior_{column}"] = booking_lookup[column].get(key, 0)
@@ -112,7 +166,13 @@ def make_features(history, rows, theaters, bookings_daily=None):
     return pd.DataFrame(feature_rows)
 
 
-def make_training_frame(visits, theaters, bookings_daily=None):
+def make_training_frame(
+    visits,
+    theaters,
+    bookings_daily=None,
+    location_groups=None,
+    bookings_by_location=None,
+):
     """Create model-training features for all observed visit rows."""
     visits = visits.copy()
     visits["show_date"] = pd.to_datetime(visits["show_date"]).dt.normalize()
@@ -124,6 +184,8 @@ def make_training_frame(visits, theaters, bookings_daily=None):
         rows=visits[["book_theater_id", "show_date"]],
         theaters=theaters,
         bookings_daily=bookings_daily,
+        location_groups=location_groups,
+        bookings_by_location=bookings_by_location,
     )
 
     features[TARGET] = visits[TARGET].to_numpy()
