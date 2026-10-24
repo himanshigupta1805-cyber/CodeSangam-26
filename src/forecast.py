@@ -13,7 +13,7 @@ from train import (
     MODEL_NAME,
     fit_model,
     get_model_path,
-    split_features,
+    predict_frame,
 )
 
 
@@ -33,6 +33,7 @@ def forecast(data, model_bundle=None, model_name=None):
             visits,
             theaters,
             data.get("bookings_daily"),
+            theater_relation=data.get("theater_relation"),
         )
         model_bundle = fit_model(training_frame, model_name=selected)
 
@@ -44,15 +45,10 @@ def forecast(data, model_bundle=None, model_name=None):
             rows,
             theaters,
             data.get("bookings_daily"),
+            theater_relation=data.get("theater_relation"),
         )
-        x = split_features(
-            features,
-            model_bundle["feature_columns"],
-            model_name=model_bundle["model_name"],
-        )
-
         result = rows[["ID", "book_theater_id", "show_date"]].copy()
-        result[TARGET] = np.maximum(model_bundle["model"].predict(x), 0)
+        result[TARGET] = np.maximum(predict_frame(model_bundle, features), 0)
         output.append(result)
 
         # Feed this day's predicted audience into history for later dates.

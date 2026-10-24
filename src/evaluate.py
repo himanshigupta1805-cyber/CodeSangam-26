@@ -6,7 +6,7 @@ import pandas as pd
 from data_loader import load_data
 from features import TARGET, make_features, make_training_frame
 from reconcile import prepare_data
-from train import MODEL_NAME, fit_model, split_features
+from train import MODEL_NAME, fit_model, predict_frame
 
 
 def regression_metrics(actual, predicted):
@@ -28,6 +28,7 @@ def temporal_validation(
     bookings_daily=None,
     holdout_days=28,
     model_name=None,
+    theater_relation=None,
 ):
     """Train before a cutoff, then recursively forecast the holdout period."""
     selected = model_name or MODEL_NAME
@@ -37,7 +38,9 @@ def temporal_validation(
     actual = visits[visits["show_date"] >= cutoff].copy()
 
     model_bundle = fit_model(
-        make_training_frame(history, theaters, bookings_daily),
+        make_training_frame(
+            history, theaters, bookings_daily, theater_relation=theater_relation
+        ),
         model_name=selected,
     )
 
@@ -47,13 +50,10 @@ def temporal_validation(
             actual["show_date"] == date,
             ["book_theater_id", "show_date"],
         ]
-        features = make_features(history, rows, theaters, bookings_daily)
-        x = split_features(
-            features,
-            model_bundle["feature_columns"],
-            model_name=model_bundle["model_name"],
+        features = make_features(
+            history, rows, theaters, bookings_daily, theater_relation=theater_relation
         )
-        yhat = model_bundle["model"].predict(x)
+        yhat = predict_frame(model_bundle, features)
 
         batch = rows.copy()
         batch[TARGET] = yhat
@@ -80,5 +80,6 @@ if __name__ == "__main__":
             data["booknow_theaters"],
             data["bookings_daily"],
             model_name=MODEL_NAME,
+            theater_relation=data["theater_relation"],
         )
     )

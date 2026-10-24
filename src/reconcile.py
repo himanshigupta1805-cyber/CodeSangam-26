@@ -1,8 +1,52 @@
-"""Reconcile theater IDs and aggregate data into daily tables."""
+"""Reconcile theater IDs and aggregate daily booking and lead-time signals."""
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+
+
+LEAD_TIME_BINS = {
+    "0_24h": (0, 24),
+    "24_72h": (24, 72),
+    "72_168h": (72, 168),
+    "168h_plus": (168, np.inf),
+}
+
+
+def _aggregate_ledger(frame, ticket_column, prefix):
+    """Aggregate tickets by show date and booking lead-time band."""
+    ledger = frame.copy()
+    ledger["show_datetime"] = pd.to_datetime(ledger["show_datetime"])
+    ledger["booking_datetime"] = pd.to_datetime(ledger["booking_datetime"])
+    ledger["show_date"] = ledger["show_datetime"].dt.normalize()
+    ledger["lead_hours"] = (
+        ledger["show_datetime"] - ledger["booking_datetime"]
+    ).dt.total_seconds() / 3600
+
+    # A transaction timestamped after its show is not an advance signal and
+    # should not be used to construct leakage-safe lead-time features.
+    ledger = ledger[ledger["lead_hours"] >= 0].copy()
+    keys = ["book_theater_id", "show_date"]
+    totals = (
+        ledger.groupby(keys, as_index=False)[ticket_column]
+        .sum()
+    )
+
+    for band, (lower, upper) in LEAD_TIME_BINS.items():
+        in_band = ledger[ledger["lead_hours"].ge(lower)]
+        if np.isfinite(upper):
+            in_band = in_band[in_band["lead_hours"] < upper]
+        band_totals = (
+            in_band.groupby(keys, as_index=False)[ticket_column]
+            .sum()
+            .rename(columns={ticket_column: f"{prefix}_lead_{band}"})
+        )
+        totals = totals.merge(band_totals, on=keys, how="left", validate="one_to_one")
+
+    band_columns = [f"{prefix}_lead_{band}" for band in LEAD_TIME_BINS]
+    totals[band_columns] = totals[band_columns].fillna(0)
+    return totals
 
 
 def prepare_data(tables):
@@ -12,71 +56,37 @@ def prepare_data(tables):
     multiple audience counts, those values are averaged because the source
     has no show ID that would tell us whether to sum them.
     """
-    # Prepare audience-count history.
     visits = tables["visits"].copy()
     visits["show_date"] = pd.to_datetime(visits["show_date"]).dt.normalize()
-
-    # Remove rows identical across every column, then leave one value per
-    # theater/date by averaging any remaining duplicate labels.
     visits = visits.drop_duplicates()
     visits = (
-        visits.groupby(
-            ["book_theater_id", "show_date"],
-            as_index=False,
-        )["audience_count"]
+        visits.groupby(["book_theater_id", "show_date"], as_index=False)["audience_count"]
         .mean()
     )
 
-    # Remove exact duplicate mappings. Each BookNow theater should map to
-    # at most one CinePOS theater.
     relation = tables["theater_relation"].drop_duplicates().copy()
-
     if relation["book_theater_id"].duplicated().any():
-        raise ValueError(
-            "A BookNow theater maps to multiple CinePOS theaters."
-        )
+        raise ValueError("A BookNow theater maps to multiple CinePOS theaters.")
 
-    # Aggregate BookNow bookings by theater and show date.
     booknow = tables["booknow_booking"].copy()
-    booknow["show_date"] = (
-        pd.to_datetime(booknow["show_datetime"]).dt.normalize()
-    )
-    booknow_daily = (
-        booknow.groupby(
-            ["book_theater_id", "show_date"],
-            as_index=False,
-        )["tickets_booked"] 
-        .sum()
-    )
+    booknow_daily = _aggregate_ledger(booknow, "tickets_booked", "booknow")
 
-    # Link CinePOS IDs to BookNow IDs, then aggregate by theater and show date.
-    cinepos = tables["cinepos_booking"].copy()
-    cinepos = cinepos.merge(
+    cinepos = tables["cinepos_booking"].merge(
         relation,
         on="cine_theater_id",
         how="inner",
         validate="many_to_one",
     )
-    cinepos["show_date"] = (
-        pd.to_datetime(cinepos["show_datetime"]).dt.normalize()
-    )
-    cinepos_daily = (
-        cinepos.groupby(
-            ["book_theater_id", "show_date"],
-            as_index=False,
-        )["tickets_sold"]
-        .sum()
-    )
+    cinepos_daily = _aggregate_ledger(cinepos, "tickets_sold", "cinepos")
 
-    # Combine both daily booking summaries. Fill a missing ledger total with 0.
     bookings_daily = booknow_daily.merge(
         cinepos_daily,
         on=["book_theater_id", "show_date"],
         how="outer",
+        validate="one_to_one",
     )
-    bookings_daily[["tickets_booked", "tickets_sold"]] = (
-        bookings_daily[["tickets_booked", "tickets_sold"]].fillna(0)
-    )
+    numeric_columns = bookings_daily.select_dtypes(include="number").columns
+    bookings_daily[numeric_columns] = bookings_daily[numeric_columns].fillna(0)
 
     return {
         **tables,
