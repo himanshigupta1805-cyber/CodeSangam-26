@@ -30,24 +30,26 @@ def write(pred, tag):
 write(base(te), "baseline fallback")
 
 def fit_lgb(d, seed=0):
-    m = lgb.LGBMRegressor(objective="poisson", n_estimators=350, learning_rate=0.05, num_leaves=31,
-                          min_child_samples=200, subsample=0.7, subsample_freq=1, colsample_bytree=0.7,
+    # More trees + smaller lr + wider leaves + full subsample for better convergence
+    m = lgb.LGBMRegressor(objective="poisson", n_estimators=600, learning_rate=0.04, num_leaves=63,
+                          min_child_samples=150, subsample=0.8, subsample_freq=1, colsample_bytree=0.8,
                           reg_lambda=10, n_jobs=1, verbose=-1, random_state=seed)
     return m.fit(d[F], d.y.values)
 
 def fit_cat(d, seed=0):
-    m = CatBoostRegressor(loss_function="Poisson", iterations=400, learning_rate=0.1, depth=6,
+    # More iterations + lower lr for smoother convergence, same regularization
+    m = CatBoostRegressor(loss_function="Poisson", iterations=600, learning_rate=0.07, depth=6,
                           l2_leaf_reg=10, thread_count=1, verbose=0, random_seed=seed,
                           allow_writing_files=False)
     return m.fit(d[F], d.y.values)
 
-best_w = 0.8  # validated: LGB 26.58, CAT 26.83, w=0.8 -> 26.60 (hybrid kept as hedge)
+best_w = 0.75  # slight shift toward CatBoost which complements LGB on count data
 
-# ---- 2) final fit on all anchors (no future data exists beyond 2024-01-06)
-full = tr.sample(frac=0.5, random_state=2)
+# ---- Final fit on ALL training data (was 50% subsample — full data reduces variance)
+full = tr  # use all data, not tr.sample(frac=0.5)
 pl = fit_lgb(full).predict(te[F]); write(pl, "LGB only (interim)")
 np.save("/home/claude/pl.npy", pl)
 pc = fit_cat(full).predict(te[F]); np.save("/home/claude/pc.npy", pc)
 final = best_w * pl + (1 - best_w) * pc
-write(final, f"hybrid w_lgb={best_w:.1f}")
+write(final, f"hybrid w_lgb={best_w:.2f}")
 print("DONE", flush=True)
