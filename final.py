@@ -1,14 +1,18 @@
+from pathlib import Path
 import numpy as np, pandas as pd, lightgbm as lgb, warnings
 from catboost import CatBoostRegressor
 warnings.simplefilter("ignore")
 
-OUT = "/mnt/user-data/outputs/submission.csv"
-tr = pd.read_parquet("/home/claude/train.parquet")
-te = pd.read_parquet("/home/claude/test.parquet")
-ids = pd.read_csv("/home/claude/ids.csv").iloc[:, 0].values
-days = pd.to_datetime(pd.read_csv("/home/claude/days.csv").iloc[:, 0])
-test = pd.read_csv("/mnt/user-data/uploads/test.csv", parse_dates=["show_date"])
-sample = pd.read_csv("/mnt/user-data/uploads/sample_submission.csv")
+ROOT = Path(__file__).resolve().parent
+RAW_DIR = ROOT / "data" / "raw"
+PROCESSED_DIR = ROOT / "data" / "processed"
+OUT = ROOT / "submission.csv"
+tr = pd.read_parquet(PROCESSED_DIR / "train.parquet")
+te = pd.read_parquet(PROCESSED_DIR / "test.parquet")
+ids = pd.read_csv(PROCESSED_DIR / "ids.csv").iloc[:, 0].values
+days = pd.to_datetime(pd.read_csv(PROCESSED_DIR / "days.csv").iloc[:, 0])
+test = pd.read_csv(RAW_DIR / "test.csv", parse_dates=["show_date"])
+sample = pd.read_csv(RAW_DIR / "sample_submission.csv")
 
 te["book_theater_id"] = ids[te.book_theater_id.values]
 te["show_date"] = days.values[te.date_idx.values]
@@ -48,8 +52,8 @@ best_w = 0.75  # slight shift toward CatBoost which complements LGB on count dat
 # ---- Final fit on ALL training data (was 50% subsample — full data reduces variance)
 full = tr  # use all data, not tr.sample(frac=0.5)
 pl = fit_lgb(full).predict(te[F]); write(pl, "LGB only (interim)")
-np.save("/home/claude/pl.npy", pl)
-pc = fit_cat(full).predict(te[F]); np.save("/home/claude/pc.npy", pc)
+np.save(PROCESSED_DIR / "pl.npy", pl)
+pc = fit_cat(full).predict(te[F]); np.save(PROCESSED_DIR / "pc.npy", pc)
 final = best_w * pl + (1 - best_w) * pc
 write(final, f"hybrid w_lgb={best_w:.2f}")
 print("DONE", flush=True)

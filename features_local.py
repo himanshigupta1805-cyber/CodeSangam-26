@@ -21,8 +21,9 @@ import pandas as pd
 import os
 
 # ---- LOCAL PATHS ----
-D = r"d:\PROJECTS\CodeSangam '26\CodeSangam-26\data\raw" + "\\"
-OUT_DIR = r"d:\PROJECTS\CodeSangam '26\CodeSangam-26\data\processed"
+ROOT = os.path.dirname(os.path.abspath(__file__))
+D = os.path.join(ROOT, "data", "raw") + os.sep
+OUT_DIR = os.path.join(ROOT, "data", "processed")
 os.makedirs(OUT_DIR, exist_ok=True)
 
 H = 53

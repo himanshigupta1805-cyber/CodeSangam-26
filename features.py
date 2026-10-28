@@ -18,27 +18,32 @@ horizon <-> weekday relation is identical in train and test.
 """
 import numpy as np
 import pandas as pd
+from pathlib import Path
 
-D = "/mnt/user-data/uploads/"
+ROOT = Path(__file__).resolve().parent
+DATA_DIR = ROOT / "data"
+RAW_DIR = DATA_DIR / "raw"
+PROCESSED_DIR = DATA_DIR / "processed"
+PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 H = 53
 
 
 def load_clean():
-    vis = pd.read_csv(D + "booknow_visits.csv", parse_dates=["show_date"])
+    vis = pd.read_csv(RAW_DIR / "booknow_visits.csv", parse_dates=["show_date"])
     # 2023-02-28 is double-logged -> average duplicates (not sum)
     vis = vis.groupby(["book_theater_id", "show_date"], as_index=False).audience_count.mean()
 
-    test = pd.read_csv(D + "test.csv", parse_dates=["show_date"])
+    test = pd.read_csv(RAW_DIR / "test.csv", parse_dates=["show_date"])
 
     # theater metadata: drop rows with missing id, dedupe
-    bt = pd.read_csv(D + "booknow_theaters.csv").dropna(subset=["book_theater_id"])
+    bt = pd.read_csv(RAW_DIR / "booknow_theaters.csv").dropna(subset=["book_theater_id"])
     bt = bt.drop_duplicates("book_theater_id")
 
-    rel = pd.read_csv(D + "movie_theater_id_relation.csv").drop_duplicates()
-    ct = pd.read_csv(D + "cinePOS_theaters.csv").drop_duplicates("cine_theater_id")
+    rel = pd.read_csv(RAW_DIR / "movie_theater_id_relation.csv").drop_duplicates()
+    ct = pd.read_csv(RAW_DIR / "cinePOS_theaters.csv").drop_duplicates("cine_theater_id")
 
-    bb = pd.read_csv(D + "booknow_booking.csv", parse_dates=["show_datetime", "booking_datetime"])
-    cb = pd.read_csv(D + "cinePOS_booking.csv", parse_dates=["show_datetime", "booking_datetime"])
+    bb = pd.read_csv(RAW_DIR / "booknow_booking.csv", parse_dates=["show_datetime", "booking_datetime"])
+    cb = pd.read_csv(RAW_DIR / "cinePOS_booking.csv", parse_dates=["show_datetime", "booking_datetime"])
     # a handful of rows are booked after the show -> drop (can't be known pre-show)
     bb = bb[bb.booking_datetime <= bb.show_datetime]
     cb = cb[cb.booking_datetime <= cb.show_datetime]
@@ -184,7 +189,7 @@ def build_all():
 if __name__ == "__main__":
     tr, te, ids, days, mapped = build_all()
     print(tr.shape, te.shape)
-    tr.to_parquet("/home/claude/train.parquet")
-    te.to_parquet("/home/claude/test.parquet")
-    pd.Series(ids).to_csv("/home/claude/ids.csv", index=False)
-    pd.Series(days).to_csv("/home/claude/days.csv", index=False)
+    tr.to_parquet(PROCESSED_DIR / "train.parquet")
+    te.to_parquet(PROCESSED_DIR / "test.parquet")
+    pd.Series(ids).to_csv(PROCESSED_DIR / "ids.csv", index=False)
+    pd.Series(days).to_csv(PROCESSED_DIR / "days.csv", index=False)

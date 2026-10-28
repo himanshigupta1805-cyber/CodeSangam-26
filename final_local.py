@@ -1,11 +1,12 @@
-import numpy as np, pandas as pd, lightgbm as lgb, warnings
+import os, numpy as np, pandas as pd, lightgbm as lgb, warnings
 from catboost import CatBoostRegressor
 warnings.simplefilter("ignore")
 
 # ---- LOCAL PATHS ----
-DATA_RAW  = r"d:\PROJECTS\CodeSangam '26\CodeSangam-26\data\raw"
-DATA_PROC = r"d:\PROJECTS\CodeSangam '26\CodeSangam-26\data\processed"
-OUT       = r"d:\PROJECTS\CodeSangam '26\CodeSangam-26\submission.csv"
+ROOT      = os.path.dirname(os.path.abspath(__file__))
+DATA_RAW  = os.path.join(ROOT, "data", "raw")
+DATA_PROC = os.path.join(ROOT, "data", "processed")
+OUT       = os.path.join(ROOT, "submission.csv")
 
 tr     = pd.read_parquet(DATA_PROC + r"\train.parquet")
 te     = pd.read_parquet(DATA_PROC + r"\test.parquet")
